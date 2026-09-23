@@ -116,4 +116,68 @@ export class SolicitacoesService {
       return manager.findOneByOrFail(Solicitacao, { id });
     });
   }
+
+  // NOVO MÉTODO: REJEITAR
+  async rejeitar(
+    id: number,
+    versaoEsperada: number,
+    justificativa: string,
+    atorId: number,
+  ) {
+    return this.dataSource.transaction(async (manager) => {
+      // 1. Procurar a solicitação
+      const solicitacao = await manager.findOneBy(Solicitacao, { id });
+
+      // 2. Se não existir → 404
+      if (!solicitacao) {
+        throw new NotFoundException('Solicitacao nao encontrada');
+      }
+
+      // 3. Só pode rejeitar se estiver pendente
+      if (solicitacao.status !== 'pendente') {
+        throw new ConflictException('Solicitacao nao esta pendente');
+      }
+
+      // 4. Alterar status e aumentar versão
+      const resultado = await manager
+        .createQueryBuilder()
+        .update(Solicitacao)
+        .set({
+          status: 'rejeitada',
+          versao: () => 'versao + 1',
+        })
+        .where('id = :id', { id })
+        .andWhere('versao = :versao', {
+          versao: versaoEsperada,
+        })
+        .andWhere('status = :status', {
+          status: 'pendente',
+        })
+        .execute();
+
+      // 5. Se a versão estiver diferente → 409
+      if (resultado.affected !== 1) {
+        throw new ConflictException(
+          'A solicitacao foi alterada; consulte novamente',
+        );
+      }
+
+      // 6. Registrar a rejeição na auditoria
+      await manager.insert(Auditoria, {
+        atorId,
+        acao: 'SOLICITACAO_REJEITADA',
+        recursoTipo: 'solicitacao',
+        recursoId: id,
+        detalhes: {
+          statusAnterior: 'pendente',
+          statusAtual: 'rejeitada',
+          versaoAnterior: versaoEsperada,
+          justificativa,
+        },
+      });
+
+      // 7. Retornar a solicitação atualizada
+      return manager.findOneByOrFail(Solicitacao, { id });
+    });
+  }
 }
